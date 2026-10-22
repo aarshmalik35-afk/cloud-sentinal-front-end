@@ -7,9 +7,6 @@ The project demonstrates the fundamentals of cloud security monitoring, security
 ## Live Demo
 
 - **Frontend:** https://aarshmalik35-afk.github.io/cloud-sentinal-front-end/
-- **Backend API:** https://cloud-sentinal-backend.onrender.com
-- **API Documentation:** https://cloud-sentinal-backend.onrender.com/docs
-- **Health Check:** https://cloud-sentinal-backend.onrender.com/health
 
 ## Key Features
 
