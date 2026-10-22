@@ -34,7 +34,7 @@ jobs:
       - name: Build frontend
         run: npm run build
         env:
-          VITE_API_BASE_URL: https://cloud-sentinal-backend.onrender.com/
+          VITE_API_BASE_URL: https://cloud-sentinal-backend.onrender.com
           GITHUB_PAGES: "true"
 
       - name: Upload Pages artifact
