@@ -27,11 +27,7 @@ function normalizeReport(data = {}) {
     ...data,
     scan_id: data.scan_id || `local-${Date.now()}`,
     scanned_at: data.scanned_at || new Date().toISOString(),
-    // Do not invent a perfect score when the API omits it.
-    posture_score: data.posture_score !== null && data.posture_score !== undefined &&
-      data.posture_score !== '' && Number.isFinite(Number(data.posture_score))
-      ? Math.max(0, Math.min(100, Number(data.posture_score)))
-      : null,
+    posture_score: data.posture_score !== null && data.posture_score !== undefined && Number.isFinite(Number(data.posture_score)) ? Number(data.posture_score) : null,
     risk_level: data.risk_level || 'Unknown',
     summary: {
       total_findings: Number(data.summary?.total_findings ?? findings.length),
@@ -68,6 +64,7 @@ function Metric({ icon: Icon, label, value, note, tone = 'blue' }) {
 function App() {
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [selectedScenario, setSelectedScenario] = useState('moderate_risk')
   const [apiState, setApiState] = useState('checking')
   const [apiMessage, setApiMessage] = useState('Checking backend')
   const [toast, setToast] = useState('')
@@ -126,14 +123,11 @@ function App() {
       const response = await fetch(`${API_BASE}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: 'CloudSentinel dashboard scan' }),
+        body: JSON.stringify({ scenario: selectedScenario, label: `CloudSentinel · ${selectedScenario.replaceAll('_', ' ')}` }),
         signal: AbortSignal.timeout(30000),
       })
       if (!response.ok) throw new Error(`Scan failed: HTTP ${response.status} — ${(await response.text()).slice(0, 180)}`)
       const result = normalizeReport(await response.json())
-      if (result.posture_score === null) {
-        throw new Error('The scan response did not include a valid posture_score')
-      }
       setReport(result)
       saveHistory(result)
       setApiState('online')
@@ -147,7 +141,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [fetchHistory, saveHistory])
+  }, [fetchHistory, saveHistory, selectedScenario])
 
   useEffect(() => { checkHealth() }, [checkHealth])
   useEffect(() => { fetchHistory() }, [fetchHistory])
@@ -221,29 +215,13 @@ function App() {
 
   const severityCounts = report?.summary?.by_severity || {}
   const total = report?.summary?.total_findings ?? 0
-  // Prefer server records when a scan exists in both histories, then combine
-  // both sources so the trend reflects actual saved scans from this browser/session.
-  const mergedHistory = useMemo(() => {
-    const byId = new Map()
-    for (const item of historyItems) {
-      if (item?.scan_id) byId.set(item.scan_id, item)
-    }
-    for (const item of serverHistory) {
-      if (item?.scan_id) {
-        const local = byId.get(item.scan_id) || {}
-        byId.set(item.scan_id, { ...local, ...item })
-      }
-    }
-    return [...byId.values()]
-      .filter(item => item.scanned_at && item.posture_score !== null &&
-        item.posture_score !== undefined && Number.isFinite(Number(item.posture_score)))
-      .sort((a, b) => new Date(a.scanned_at).getTime() - new Date(b.scanned_at).getTime())
-  }, [historyItems, serverHistory])
-
-  const chartData = mergedHistory.slice(-10).map((item, i) => ({
-    label: new Date(item.scanned_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-    score: Number(item.posture_score),
-    findings: item.summary?.total_findings ?? item.findings?.length ?? 0,
+  const mergedHistory = [...new Map([...serverHistory, ...historyItems].map(item => [item.scan_id, item])).values()]
+    .filter(item => item.scanned_at && item.posture_score !== null && item.posture_score !== undefined)
+    .sort((a, b) => new Date(a.scanned_at) - new Date(b.scanned_at))
+  const chartData = mergedHistory.slice(-10).map((x, i) => ({
+    label: new Date(x.scanned_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    score: Number(x.posture_score),
+    findings: x.summary?.total_findings ?? x.findings?.length ?? 0,
     index: i + 1,
   }))
 
@@ -254,7 +232,7 @@ function App() {
       <nav className="nav-list">
         <button className={activeTab === 'overview' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('overview')}><Activity size={17}/> Overview</button>
         <button className={activeTab === 'findings' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('findings')}><ShieldAlert size={17}/> Security findings <span className="nav-count">{total}</span></button>
-        <button className={activeTab === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('history')}><History size={17}/> Scan history <span className="nav-count">{mergedHistory.length}</span></button>
+        <button className={activeTab === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('history')}><History size={17}/> Scan history <span className="nav-count">{new Set([...serverHistory, ...historyItems].map(x => x.scan_id)).size}</span></button>
         <button className={activeTab === 'comparison' ? 'nav-item active' : 'nav-item'} onClick={() => setActiveTab('comparison')}><ArrowLeftRight size={17}/> Compare scans</button>
       </nav>
       <div className="sidebar-bottom">
@@ -272,7 +250,12 @@ function App() {
       <div className="page-content">
         <section className="welcome-row">
           <div><div className="eyebrow"><Cloud size={14}/> CLOUD POSTURE MANAGEMENT</div><h1>{activeTab === 'overview' ? 'Security overview' : activeTab === 'findings' ? 'Security findings' : activeTab === 'history' ? 'Scan history' : 'Scan comparison'}<span>.</span></h1><p className="subtitle">Prioritize cloud risk with evidence-backed findings and remediation guidance.</p></div>
-          <div className="welcome-actions"><button className="button secondary" onClick={() => exportJson()} disabled={!report}><ArrowDownToLine size={16}/> Export report</button><button className="button primary" onClick={runScan} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/>{loading ? 'Scanning…' : 'Run security scan'}</button></div>
+          <div className="welcome-actions">
+            <label className="scenario-control"><span>Scenario</span><select aria-label="Select simulated security scenario" value={selectedScenario} onChange={e => setSelectedScenario(e.target.value)} disabled={loading}>
+              <option value="secure">Secure environment</option><option value="moderate_risk">Moderate risk</option><option value="high_risk">High risk</option>
+            </select></label>
+            <button className="button secondary" onClick={() => exportJson()} disabled={!report}><ArrowDownToLine size={16}/> Export report</button><button className="button primary" onClick={runScan} disabled={loading}><RefreshCw size={16} className={loading ? 'spin' : ''}/>{loading ? 'Scanning…' : 'Run security scan'}</button>
+          </div>
         </section>
 
         {apiState === 'offline' && <div className="notice warning"><AlertTriangle size={18}/><div><strong>Backend unreachable</strong><p>The live API at <code>{API_BASE}</code> could not be reached. Check Render status, CORS origins, and browser Network details.</p></div></div>}
@@ -283,19 +266,19 @@ function App() {
             <Metric icon={Database} label="Resources reviewed" value={report?.summary?.resources_reviewed ?? '—'} note="Latest backend scan" tone="blue"/>
             <Metric icon={ShieldAlert} label="Open findings" value={total || (report ? 0 : '—')} note="Requires review" tone="purple"/>
             <Metric icon={AlertTriangle} label="Critical + high" value={(severityCounts.critical || 0) + (severityCounts.high || 0)} note={`${severityCounts.medium || 0} medium severity`} tone="red"/>
-            <Metric icon={CheckCircle2} label="Posture score" value={report && report.posture_score !== null ? `${report.posture_score}/100` : '—'} note={report?.risk_level ? `${report.risk_level} risk` : 'Run your first scan'} tone="green"/>
+            <Metric icon={CheckCircle2} label="Posture score" value={report ? `${report.posture_score}/100` : '—'} note={report?.risk_level ? `${report.risk_level} risk` : 'Run your first scan'} tone="green"/>
           </section>
 
           <section className="content-grid">
             <div className="panel chart-panel">
-              <div className="panel-heading"><div><h2>Posture trend</h2><p>{chartData.length > 1 ? 'From saved backend and browser scans' : 'Run scans to build your trend'}</p></div><span className="chart-label">{chartData.length} saved</span></div>
+              <div className="panel-heading"><div><h2>Posture trend</h2><p>{chartData.length > 1 ? 'Recorded scan scores across available history' : 'Run different scenarios to build your trend'}</p></div><span className="chart-label">{chartData.length} saved</span></div>
               <div className="chart-wrap">
                 {chartData.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}>
                   <defs><linearGradient id="scoreFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#4f7cff" stopOpacity={0.25}/><stop offset="100%" stopColor="#4f7cff" stopOpacity={0}/></linearGradient></defs>
                   <CartesianGrid strokeDasharray="3 4" stroke="#e8edf4" vertical={false}/><XAxis dataKey="label" tick={{ fill: '#8792a4', fontSize: 11 }} axisLine={false} tickLine={false}/><YAxis domain={[0,100]} tick={{ fill: '#8792a4', fontSize: 11 }} axisLine={false} tickLine={false}/><Tooltip contentStyle={{ border: '1px solid #e4e9f0', borderRadius: 12 }}/><Area type="monotone" dataKey="score" name="Posture score" stroke="#4f7cff" strokeWidth={2.5} fill="url(#scoreFill)"/>
                 </AreaChart></ResponsiveContainer> : <div className="chart-empty"><Activity size={24}/><strong>No trend yet</strong><span>Run at least two scans to compare posture over time.</span></div>}
               </div>
-              <div className="chart-foot"><span><i className="legend-dot blue-dot"/> Posture score</span><span><i className="legend-dot purple-dot"/> Combined scan history</span></div>
+              <div className="chart-foot"><span><i className="legend-dot blue-dot"/> Posture score</span><span><i className="legend-dot purple-dot"/> Scan history</span></div>
             </div>
             <div className="panel posture-panel">
               <div className="panel-heading"><div><h2>Security posture</h2><p>Heuristic risk assessment</p></div><Shield size={20}/></div>
